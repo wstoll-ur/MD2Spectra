@@ -196,3 +196,15 @@ frequency-filtered MD animation workflow. Machine-specific scheduling, credentia
 private communications, downloaded papers and bulk campaign trajectories are not
 part of the portable package. Original campaign data remain in their source
 workspace. See [third-party references](THIRD_PARTY.md).
+
+## Raman-only and long cluster runs
+
+Use `--raman-only` on `run`, `label`, or `spectrum` to omit dipole/IR processing.
+Raman-only labeling does not require a molecular dipole convention or fixed
+molecular connectivity. Polarizability wrapping and rotation checks still run.
+For long jobs, `md --max-wall-s 81000` and
+`label --raman-only --max-wall-s 81000` stop with exit code 75 after saving
+restart state. Use a sequential scheduler continuation to resume the same stage.
+`--no-save-momenta` reduces trajectory storage; momenta remain in every MD
+checkpoint, so restart dynamics are unchanged. Gracefully checkpointed trajectories
+are reused in place rather than rewritten on every allocation.

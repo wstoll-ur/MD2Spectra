@@ -84,6 +84,12 @@ def checkpoint(folder, atoms, dyn, rng, step, identity):
 
 def recover_trajectory(path, checkpoint_step, save_every):
     """Drop an interrupted tail and require the complete committed prefix."""
+    required = checkpoint_step // save_every + 1
+    with Trajectory(path) as old:
+        if len(old) == required and old[0].info['step'] == 0 and old[-1].info['step'] == checkpoint_step:
+            # Graceful stops already end at the durable checkpoint. Avoid copying
+            # hundreds of GB just to continue a long, unchanged trajectory.
+            return
     temp = path.with_suffix('.recovered.traj')
     expected = 0
     with Trajectory(path) as old, Trajectory(temp, 'w') as new:
@@ -105,9 +111,12 @@ def recover_trajectory(path, checkpoint_step, save_every):
     temp.replace(path)
 
 
-def run_md(cfg, folder, calculator=None, stop_after_steps=None):
+def run_md(cfg, folder, calculator=None, stop_after_steps=None, max_wall_s=None):
     """calculator/stop_after_steps enable deterministic integration tests."""
     total, checkpoint_steps = validate_config(cfg)
+    if max_wall_s is not None and (not np.isfinite(max_wall_s) or max_wall_s <= 0):
+        raise ValueError('max_wall_s must be positive')
+    allocation_start = time.monotonic()
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     cfg = dict(cfg)
@@ -176,6 +185,8 @@ def run_md(cfg, folder, calculator=None, stop_after_steps=None):
                     if not np.allclose(atoms.cell, refcell, atol=1e-10, rtol=0):
                         raise RuntimeError('Cell changed during fixed-cell MD')
                     frame = atoms.copy()
+                    if not cfg.get('save_momenta', True):
+                        frame.arrays.pop('momenta', None)
                     frame.info = dict(step=step, time_ps=step * cfg['timestep_fs'] / 1000,
                                       temperature_K=float(atoms.get_temperature()))
                     trajectory.write(frame)
@@ -192,6 +203,8 @@ def run_md(cfg, folder, calculator=None, stop_after_steps=None):
                             time_ps=step * cfg['timestep_fs'] / 1000, elapsed_s=time.monotonic() - start))
                         print(f'MD: {step}/{total} steps', flush=True)
                     if stop_after_steps is not None and step >= stop_after_steps:
+                        break
+                    if max_wall_s is not None and time.monotonic() - allocation_start >= max_wall_s:
                         break
                 checkpoint(folder, atoms, dyn, rng, step, identity)
         finally:

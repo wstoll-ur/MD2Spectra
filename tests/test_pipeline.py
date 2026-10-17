@@ -11,7 +11,7 @@ from ase.io.trajectory import Trajectory
 from md2spectra.dynamics import run_md, prepare, validate_config
 from md2spectra.geometry import molecular_geometry, molecular_dipole
 from md2spectra.motion import export_motion, filter_motion
-from md2spectra.response import label
+from md2spectra.response import label, label_raman
 from md2spectra.spectra import calculate, analyze, C_CM_S
 
 
@@ -38,6 +38,13 @@ class MolecularResponse(Calculator):
             v = v - v.mean(axis=0)
             alpha += v.T @ v
         self.results = dict(polarizability=alpha, dipole=q @ atoms.positions, charges=q)
+
+
+class RamanResponse(MolecularResponse):
+    def get_property(self, name, atoms=None, allow_calculation=True):
+        if name in ['charges', 'dipole']:
+            raise AssertionError('Raman-only labeling must not request dipoles/charges')
+        return super().get_property(name, atoms, allow_calculation)
 
 
 def water():
@@ -149,6 +156,25 @@ class IntegrationTests(unittest.TestCase):
             values=dict(z);values['dipole_convention']='raw'
         np.savez(bad,**values)
         with self.assertRaisesRegex(ValueError,'raw dipoles'):analyze(bad,self.root/'bad',100,segment_ps=.008)
+    def test_raman_only_and_position_only_restart(self):
+        cfg = dict(self.cfg, save_momenta=False)
+        folder = self.root/'raman-only'
+        self.assertFalse(run_md(cfg,folder,Harmonic(prepare(cfg).positions),max_wall_s=1e-9))
+        self.assertTrue(run_md(cfg,folder,Harmonic(prepare(cfg).positions)))
+        with Trajectory(folder/'trajectory.traj') as trajectory:
+            self.assertNotIn('momenta', trajectory[-1].arrays)
+        checkpoint=json.loads((folder/'checkpoint.json').read_text())
+        self.assertEqual(len(checkpoint['momenta']),3)
+        interrupted=label_raman(folder/'trajectory.traj',folder/'response',calculator=RamanResponse(),chunk_size=8,max_wall_s=1e-9)
+        self.assertIsNone(interrupted)
+        labels=label_raman(folder/'trajectory.traj',folder/'response',calculator=RamanResponse(),chunk_size=8)
+        with np.load(labels) as values:
+            self.assertNotIn('dipole',values.files)
+        meta=analyze(labels,folder/'spectra',100.,segment_ps=.008,raman_only=True)
+        self.assertEqual(meta['spectroscopy'],'raman')
+        columns=(folder/'spectra'/'spectra.csv').read_text().splitlines()[0]
+        self.assertNotIn('ir_',columns)
+        self.assertNotIn('dipole_convention',meta)
     def test_bad_sampling(self):
         with self.assertRaises(ValueError):validate_config(dict(self.cfg,production_ps=.0161))
         with self.assertRaises(ValueError):validate_config(dict(self.cfg,supercell=[0,1,1]))
