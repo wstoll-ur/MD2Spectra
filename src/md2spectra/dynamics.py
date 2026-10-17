@@ -54,9 +54,9 @@ def prepare(cfg):
     atoms.info = {}
     if not np.isfinite(atoms.positions).all():
         raise ValueError('Invalid CIF coordinates')
-    distances = atoms.get_all_distances(mic=True)
-    np.fill_diagonal(distances, np.inf)
-    if distances.min() < .5:
+    from ase.neighborlist import neighbor_list
+    distances = neighbor_list('d', atoms, .5)
+    if len(distances) and distances.min() < .5:
         raise ValueError('Overlapping CIF sites (<0.5 Angstrom); resolve disorder first')
     return atoms
 
