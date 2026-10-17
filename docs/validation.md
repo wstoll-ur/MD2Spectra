@@ -14,6 +14,13 @@ Initial local validation, 2026-10-17:
   3.52e-15 (wrapped alpha), 6.91e-15 (wrapped molecular dipole),
   6.44e-15 (rotated alpha), and 1.38e-14 (rotated molecular dipole), in model units.
   The model SHA-256 was verified before loading.
+- A real-model labeling and spectrum-export smoke test passed on 16 existing
+  glycine trajectory frames, sampled every 10 fs. This validates execution of the
+  response pipeline; its short duration and 1,668 cm⁻¹ Nyquist limit make it
+  unsuitable for interpreting full vibrational spectra.
+- A wheel built and installed successfully in a separate environment. Both
+  command entry points and a four-molecule supercell dry run passed; all ten
+  regression tests also passed against the installed package.
 
 The local reference environment was Python 3.11, ASE 3.29.0, NumPy 2.4.6,
 SciPy 1.17.1, MACE 0.3.15 and Torch 2.13.0. CUDA inference can produce different
