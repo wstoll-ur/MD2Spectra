@@ -208,3 +208,12 @@ restart state. Use a sequential scheduler continuation to resume the same stage.
 `--no-save-momenta` reduces trajectory storage; momenta remain in every MD
 checkpoint, so restart dynamics are unchanged. Gracefully checkpointed trajectories
 are reused in place rather than rewritten on every allocation.
+
+For fixed-composition UMA MD, `--uma-inference md` merges composition-dependent
+experts and disables activation checkpointing. It retains FP32 with TF32 and
+compilation disabled; FAIRChem selects the compatible execution backend.
+Benchmark speed and GPU memory on the full supercell before a long campaign.
+The conservative profile remains the default. An explicitly selected profile
+is part of the restart identity and cannot be changed within an existing run.
+Trajectories are retained after spectra are calculated and can be reused for
+coordinate-based collective variables and free-energy analysis.

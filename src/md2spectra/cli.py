@@ -22,6 +22,8 @@ def add_md_options(p):
     p.add_argument('--checkpoint-ps', type=float, default=1.)
     p.add_argument('--seed', type=int, default=20261017)
     p.add_argument('--uma-model', default='uma-s-1p2p1', help='FAIRChem model ID or trusted local checkpoint')
+    p.add_argument('--uma-inference', choices=['conservative', 'md'], default=None,
+                   help='Defaults to conservative; md merges experts and disables activation checkpointing; benchmark GPU memory first')
     p.add_argument('--task', default='omc', choices=['omc', 'omat', 'omol', 'oc20', 'oc22', 'oc25', 'odac'])
     p.add_argument('--device', choices=['cpu', 'cuda'], default='cuda')
     p.add_argument('--relax', action=argparse.BooleanOptionalAction, default=True)
@@ -31,7 +33,7 @@ def add_md_options(p):
 
 MD_KEYS = ['cif', 'cif_index', 'temperature', 'supercell', 'production_ps', 'equilibration_ps',
            'timestep_fs', 'save_every', 'thermostat_fs', 'checkpoint_ps', 'seed', 'uma_model',
-           'task', 'device', 'relax', 'fmax', 'save_momenta']
+           'task', 'device', 'relax', 'fmax', 'save_momenta', 'uma_inference']
 
 
 def main(argv=None):
@@ -89,6 +91,8 @@ def main(argv=None):
         else:
             from .dynamics import validate_config, prepare, run_md
             cfg = {key: getattr(args, key) for key in MD_KEYS}
+            if cfg['uma_inference'] is None:
+                del cfg['uma_inference']  # Preserve identities of runs made before this option.
             cfg['cif'] = str(Path(cfg['cif']).expanduser().resolve())
             if Path(cfg['uma_model']).expanduser().is_file():
                 cfg['uma_model'] = str(Path(cfg['uma_model']).expanduser().resolve())

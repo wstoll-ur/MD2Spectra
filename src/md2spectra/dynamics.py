@@ -64,7 +64,13 @@ def prepare(cfg):
 def uma_calculator(cfg):
     from fairchem.core import FAIRChemCalculator, pretrained_mlip
     from fairchem.core.units.mlip_unit.api.inference import InferenceSettings
-    settings = InferenceSettings(tf32=False, compile=False)
+    # Merging composition-dependent experts is useful for fixed-composition MD.
+    # Keep the historical setting available for existing checkpoints and tests.
+    profile = cfg.get('uma_inference', 'conservative')
+    if profile not in ['conservative', 'md']:
+        raise ValueError('Unknown UMA inference profile')
+    settings = InferenceSettings(tf32=False, compile=False,
+        activation_checkpointing=profile == 'conservative', merge_mole=profile == 'md')
     if Path(cfg['uma_model']).is_file():
         from fairchem.core.units.mlip_unit import load_predict_unit
         predictor = load_predict_unit(cfg['uma_model'], device=cfg['device'], inference_settings=settings)
@@ -121,6 +127,7 @@ def run_md(cfg, folder, calculator=None, stop_after_steps=None, max_wall_s=None)
     folder.mkdir(parents=True, exist_ok=True)
     cfg = dict(cfg)
     cfg['cif'] = str(Path(cfg['cif']).resolve())
+    print('Validating input and model provenance', flush=True)
     identity = dict(config=cfg, cif_sha256=sha256(cfg['cif']), runtime=versions())
     if Path(cfg['uma_model']).is_file():
         identity['uma_sha256'] = sha256(cfg['uma_model'])
@@ -156,7 +163,9 @@ def run_md(cfg, folder, calculator=None, stop_after_steps=None, max_wall_s=None)
         else:
             atoms, step = prepare(cfg), 0
         refcell = atoms.cell.array.copy()
+        print(f'Loading UMA calculator for {len(atoms)} atoms at step {step}', flush=True)
         atoms.calc = calculator if calculator is not None else uma_calculator(cfg)
+        print('Calculator ready; initializing dynamics', flush=True)
         if saved is None:
             if cfg['relax']:
                 optimizer = FIRE(atoms, logfile=str(folder / 'relax.log'), maxstep=.03)
