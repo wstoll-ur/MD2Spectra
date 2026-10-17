@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "md2spectra"
+version = "0.1.0"
+description = "Reproducible UMA molecular dynamics, Raman/IR spectra, and band-motion exports"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "scipy>=1.12", "ase>=3.26", "matplotlib>=3.8"]
+
+[project.optional-dependencies]
+uma = ["fairchem-core==2.23.0"]
+response = ["mace-torch==0.3.15"]
+test = ["pytest>=8"]
+
+[project.scripts]
+md2spectra = "md2spectra.cli:main"
+md2motion = "md2spectra.motion:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
