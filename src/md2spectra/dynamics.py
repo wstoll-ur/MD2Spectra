@@ -191,13 +191,18 @@ def run_md(cfg, folder, calculator=None, stop_after_steps=None, max_wall_s=None)
                 def save_frame():
                     if not np.isfinite(atoms.positions).all() or not np.isfinite(atoms.get_forces()).all():
                         raise RuntimeError('Nonfinite MD geometry/forces')
+                    potential = float(atoms.get_potential_energy())
+                    if not np.isfinite(potential):
+                        raise RuntimeError('Nonfinite MD energy')
                     if not np.allclose(atoms.cell, refcell, atol=1e-10, rtol=0):
                         raise RuntimeError('Cell changed during fixed-cell MD')
                     frame = atoms.copy()
                     if not cfg.get('save_momenta', True):
                         frame.arrays.pop('momenta', None)
                     frame.info = dict(step=step, time_ps=step * cfg['timestep_fs'] / 1000,
-                                      temperature_K=float(atoms.get_temperature()))
+                                      temperature_K=float(atoms.get_temperature()),
+                                      potential_energy_eV=potential,
+                                      kinetic_energy_eV=float(atoms.get_kinetic_energy()))
                     trajectory.write(frame)
                 if saved is None:
                     save_frame()
