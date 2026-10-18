@@ -1,5 +1,33 @@
 # Validation record
 
+QHA extension validation, 2026-10-18:
+
+- All 26 unit/integration tests passed, including the 11 existing regressions.
+- Analytic checks cover zero-point energy, quantum harmonic free energy,
+  q-point normalization, thermal expansion from mode softening, pressure units,
+  and equilibrium-volume fitting with a large static energy offset.
+- Real ASE finite-displacement phonons with the EMT copper potential exercise
+  the volume scan and temperature-cell export. Short EMT MD confirms that the
+  selected QHA volume, multiplied by the requested MD supercell size, stays fixed
+  in every trajectory frame.
+- Restart checks reuse completed volumes after interruption, reject changed
+  settings and detect modified output cells. CLI checks cover inclusive ranges,
+  explicit temperature lists, invalid inputs, standalone 0 K QHA, per-temperature
+  cell/temperature dispatch, and stopping before MD after a failed QHA stage.
+- The documented seven-temperature dry run and standalone QHA help command passed.
+- Constant-volume shape tests use distorted copper cells to check relaxation of
+  lengths, angles and internal positions, energy reduction, force/stress
+  convergence and volume preservation on every evaluated configuration. Numerical
+  energy derivatives check the projected cell-filter forces. Tests also cover
+  shape restart/settings protection, rejection of unconverged cells and
+  preservation of the optimized full cell matrix throughout NVT.
+
+These tests validate implementation and data flow. A production UMA QHA scan
+and material-specific convergence/experimental validation have **not** been run.
+The phonon volume scan preserves cell shape; a static constant-volume shape
+optimization follows at each temperature. Full anisotropic QHA is outside its
+scope. See [the QHA methods](methods.md#quasi-harmonic-cell-preparation).
+
 Initial local validation, 2026-10-17:
 
 - Ten model-independent unit/integration tests passed. They include an

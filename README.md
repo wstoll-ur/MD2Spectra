@@ -3,9 +3,11 @@
 Turn a crystal structure into **UMA molecular dynamics, powder Raman spectra,
 THz/IR absorption proxies, and frequency-selected atomic-motion animations**.
 
-Two commands:
+Main commands:
 
 - `md2spectra run`: CIF → supercell → fixed-cell relaxation → equilibration → production MD → response labeling → spectra.
+- `md2spectra run --qha`: CIF → QHA volumes → constant-volume cell-shape optimization → one NVT/response/spectrum run per temperature.
+- `md2spectra qha`: calculate temperature-dependent volumes and cells without launching MD.
 - `md2motion`: select a frequency interval and export its MD motion as an extended XYZ movie.
 
 The initial implementation targets **ordered, neutral molecular crystals**, such
@@ -65,8 +67,8 @@ md2spectra run \
 This saves frames every **1 fs**, giving a Nyquist frequency of approximately
 16,678 cm⁻¹. Twenty-picosecond Hann/Welch segments give approximately 1.668 cm⁻¹
 bin spacing; the window also broadens peaks. `--production-ps` excludes the
-separately requested equilibration time. The cell stays fixed at the supplied
-experimental geometry; `--supercell` repeats it without changing its density.
+separately requested equilibration time. By default, the cell stays fixed at the
+supplied experimental geometry; `--supercell` repeats it without changing its density.
 
 Add `--dry-run` to inspect atom count, inferred molecular sizes, volume, resolution,
 and frame count without loading either model or launching MD. Use `--cif-index`
@@ -78,6 +80,102 @@ Useful options include `--seed`, `--thermostat-fs`, `--checkpoint-ps`,
 Run `md2spectra run --help` for the full interface. A synthetic water-box CIF is
 provided in `examples/` solely for testing the interface; it is not an
 experimental crystal or a reference spectrum.
+
+### Temperature series with QHA volumes
+
+Select QHA and the MD temperature range in the initial command:
+
+```bash
+md2spectra run \
+  --cif crystal.cif \
+  --qha --temperature-range 100 400 50 \
+  --qha-volume-factors 0.94 0.96 0.98 1.00 1.02 1.04 1.06 \
+  --qha-supercell 2 2 2 --qha-mesh 8 8 8 \
+  --supercell 2 1 2 \
+  --equilibration-ps 10 --production-ps 100 --segment-ps 20 \
+  --raman-only --device cuda \
+  --output runs/crystal-qha
+```
+
+`--temperature-range START STOP STEP` includes both endpoints; STOP must be
+exactly reachable by stepping from START. This example runs at 100, 150, 200,
+250, 300, 350 and 400 K. Use `--temperatures 100 175 300` for an explicit list,
+or `--temperature 300 --qha` for a single temperature. These choices are mutually
+exclusive. MD temperatures must be positive and lists strictly increasing.
+
+QHA uses UMA static energies and finite-displacement phonons at each sampled
+volume to minimize `E_static(V) + F_vib(V,T) + pV`, including zero-point energy.
+The phonon scan is shared by all temperatures. At each fitted volume, a
+**constant-volume optimization relaxes lattice lengths, angles and atomic
+positions** using UMA energy, forces and stress. Each MD run then equilibrates
+independently at that optimized cell and its own temperature, followed by response
+labeling and Raman analysis. The trajectory volume and temperature are passed
+through to spectral normalization and quantum correction automatically.
+
+The **QHA volume scan** preserves the input cell's shape and relaxes internal
+coordinates. The subsequent per-temperature shape optimization holds the fitted
+volume fixed while allowing all deviatoric strains, including shear. The resulting
+full cell matrix stays fixed throughout NVT. Shape relaxation minimizes static
+energy; phonon free energies are not recomputed for the changed shapes, so this
+is not a full anisotropic QHA minimization. QHA volumes include quantum harmonic
+effects, while subsequent MD remains classical. See
+[methods and limitations](docs/methods.md#quasi-harmonic-cell-preparation).
+
+Volume factors are `V/V_input`, not lattice-length factors. The default range is
+a starting grid, not a guaranteed equilibrium bracket. An unstable phonon spectrum,
+nonconvex fit, or unbracketed minimum stops the workflow before MD. Inspect the
+saved free energies and converge the volume grid, phonon supercell, q-point mesh,
+displacement and relaxation threshold for the crystal of interest. No unstable
+modes or volume points are silently removed. Refine settings in a new directory.
+
+`--qha-supercell` controls force-constant calculations independently of the MD
+`--supercell`; `--qha-mesh` specifies even dimensions of a shifted q-point mesh.
+Other options are `--qha-displacement` (default 0.01 Å), `--qha-fmax` (default
+0.001 eV/Å), `--qha-shape-stress-gpa` (default 0.01 GPa, maximum absolute
+deviatoric-stress component), and `--qha-pressure-gpa` (default 0). Both force and
+deviatoric-stress tolerances must be met before a temperature cell is accepted;
+hydrostatic stress is allowed because volume is constrained. Volume is checked
+on every optimization step. QHA always uses conservative
+UMA inference because it evaluates both the input cell and phonon supercells;
+`--uma-inference md` still selects the optimized profile for subsequent MD.
+No additional dependency beyond the existing ASE/UMA installation is needed.
+
+Add `--dry-run` to validate the inputs and preview the scan without model loading.
+Dry runs report the input volume; predicting temperature-dependent volumes
+requires executing QHA. To run QHA alone, including an optional 0 K point:
+
+```bash
+md2spectra qha --cif crystal.cif --temperature-range 0 400 50 \
+  --device cuda --output runs/crystal-qha-only
+```
+
+The temperature-series output contains:
+
+```text
+runs/crystal-qha/
+  series.json                        initial settings and source checksum
+  qha/
+    qha.json                         scan identity and model checksum
+    volumes.csv                      temperature, input-cell volume, fit diagnostics
+    free-energy.npz                  static/vibrational/total energies on the grid
+    volume-000/                      relaxed cell, restartable force cache, phonons
+    cells/temperature-000/relaxed.extxyz
+    cells/temperature-000/relaxed.json  fitted volume, cell geometry, convergence checks
+    qha-complete.json                 temperature-to-cell mapping and checksums
+  temperature-000-100K/               full MD/response/spectrum outputs
+  temperature-001-150K/
+  ...
+  complete.json                      written after every temperature succeeds
+```
+
+Repeat the identical command to resume. Completed phonon displacements, volume
+calculations and temperature runs are reused; model/input/settings changes are
+rejected. Outputs from the earlier QHA implementation without shape optimization
+require a new output directory. Each temperature directory retains the existing MD checkpoint, `STOP`
+and labeling restart behavior. QHA's interrupted displacement resumes from its
+force cache; interrupted relaxation repeats that volume's relaxation. QHA,
+MD and response stages run sequentially in separate processes to release model
+memory between stages.
 
 ### Outputs and restart
 
