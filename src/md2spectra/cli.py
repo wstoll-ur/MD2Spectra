@@ -43,9 +43,11 @@ def add_md_options(p, multiple_temperatures=False):
 
 
 def add_qha_options(p):
+    p.add_argument('--qha-relax-reference', action=argparse.BooleanOptionalAction, default=False,
+                   help='Fully relax input-cell positions, lengths and angles before the volume scan')
     p.add_argument('--qha-volume-factors', type=float, nargs='+',
                    default=[.94, .96, .98, 1., 1.02, 1.04, 1.06],
-                   help='At least five increasing V/V_input values (volume, not length factors)')
+                   help='At least five increasing V/V_reference values; reference is optimized when requested')
     p.add_argument('--qha-supercell', type=int, nargs=3, default=[2, 2, 2],
                    help='Finite-displacement supercell, independent of the MD supercell')
     p.add_argument('--qha-mesh', type=int, nargs=3, default=[8, 8, 8],
@@ -66,7 +68,8 @@ def qha_config(args, temperatures):
     cfg.update(temperatures=temperatures, volume_factors=args.qha_volume_factors,
                phonon_supercell=args.qha_supercell, mesh=args.qha_mesh,
                displacement=args.qha_displacement, fmax=args.qha_fmax,
-               pressure_gpa=args.qha_pressure_gpa, shape_stress_gpa=args.qha_shape_stress_gpa)
+               pressure_gpa=args.qha_pressure_gpa, shape_stress_gpa=args.qha_shape_stress_gpa,
+               relax_reference=args.qha_relax_reference)
     from .qha import validate_qha
     validate_qha(cfg)
     return cfg

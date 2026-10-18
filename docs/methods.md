@@ -37,6 +37,10 @@ modes. Every mode on that grid must have positive energy. Gamma is checked
 separately: the lowest three branches must be within 1e-4 eV of zero, and all
 remaining modes must be positive. Negative signed energies represent imaginary
 frequencies; they are never replaced by absolute values or omitted.
+Wavevectors commensurate with the force supercell are also checked for stability
+(apart from Gamma's three acoustic modes). This additional screen catches soft
+branches on axes that the shifted integration mesh can miss. These extra points
+do not change the integration weights or enter the vibrational free-energy sum.
 Every newly evaluated volume retains `phonon-diagnostics.npz` and
 `phonon-diagnostics.json`, including the rejected frequencies if validation fails.
 
@@ -184,3 +188,17 @@ activity. A unique eigenvector requires a separate normal-mode analysis; it is
 not inferred by this exporter. Long-time diffusion and reactions violate the
 vibration-around-a-reference interpretation. The saved-frame interval must be
 short enough that minimum-image temporal unwrapping is unambiguous.
+
+Use `--qha-relax-reference` to fully relax the original input cell's atomic
+positions, lengths, angles, and volume before constructing the QHA volume grid.
+The input cell is not replicated for this optimization. The volume factors then
+refer to the optimized reference volume. The reference optimization uses the
+specified external pressure, `--qha-fmax`, and `--qha-shape-stress-gpa` as an
+independent tolerance on the full residual stress tensor. Its geometry is
+checkpointed every ten optimizer steps, and the converged cell and settings are
+checksummed. The default remains to use the supplied reference cell.
+
+Phonon stability failures have a distinct `PhononInstabilityError` type so an
+external workflow can retry larger phonon supercells without treating an input,
+calculator, relaxation, or free-energy-fit failure as a finite-size problem.
+Passing stability screening alone does not establish supercell convergence.

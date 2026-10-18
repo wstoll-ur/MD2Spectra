@@ -23,6 +23,70 @@ from .dynamics import prepare, uma_calculator
 from .io import lock, save_json, save_npz, sha256, versions
 
 
+class PhononInstabilityError(ValueError):
+    """A computed phonon spectrum failed stability screening."""
+
+
+def relax_reference(atoms, calculator, folder, fmax=.001, stress_gpa=.01, pressure_gpa=0.):
+    """Fully relax the input cell and positions, with restartable geometry.
+
+    Caller owns the output lock and input/model provenance. No replication is
+    performed: a unit-cell input remains a unit-cell reference.
+    """
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path, manifest = folder/'relaxed.extxyz', folder/'relaxed.json'
+    settings = dict(method='full-cell-frechet-v1', fmax_eV_A=fmax,
+                    stress_limit_GPa=stress_gpa, pressure_GPa=pressure_gpa,
+                    numbers=atoms.numbers.tolist(), cell_A=atoms.cell.array.tolist(),
+                    positions_A=atoms.positions.tolist())
+    settings_path = folder/'settings.json'
+    if settings_path.exists():
+        if json.loads(settings_path.read_text()) != settings:
+            raise ValueError('Reference relaxation input/settings changed')
+    else:
+        save_json(settings_path, settings)
+    if manifest.exists():
+        record = json.loads(manifest.read_text())
+        if record['settings'] != settings or sha256(path) != record['sha256']:
+            raise ValueError('Reference relaxation settings/checksum changed')
+        return read(path)
+    checkpoint = folder/'checkpoint.extxyz'
+    if checkpoint.exists():
+        atoms = read(checkpoint)
+    atoms.calc = calculator
+    def save_geometry(destination):
+        tmp = destination.with_name(destination.stem+'.tmp.extxyz')
+        write(tmp, atoms, format='extxyz', write_results=False)
+        tmp.replace(destination)
+    cell_filter = FrechetCellFilter(atoms, scalar_pressure=pressure_gpa*units.GPa)
+    converged = False
+    with FIRE(cell_filter, logfile=str(folder/'relax.log'), maxstep=.03) as optimizer:
+        optimizer.attach(lambda: save_geometry(checkpoint), interval=10)
+        for _ in optimizer.irun(fmax=0., steps=12000):
+            forces = atoms.get_forces()
+            stress = atoms.get_stress(voigt=False) + np.eye(3)*pressure_gpa*units.GPa
+            energy = float(atoms.get_potential_energy())
+            if not np.isfinite(forces).all() or not np.isfinite(stress).all() or not np.isfinite(energy):
+                raise ValueError('Nonfinite reference relaxation energy/forces/stress')
+            metrics = dict(volume_A3=atoms.get_volume(), energy_eV=energy,
+                           max_force_eV_A=float(np.linalg.norm(forces, axis=1).max()),
+                           max_residual_stress_GPa=float(np.abs(stress).max()/units.GPa),
+                           steps=optimizer.nsteps)
+            save_json(folder/'progress.json', metrics)
+            if metrics['max_force_eV_A'] <= fmax and metrics['max_residual_stress_GPa'] <= stress_gpa:
+                converged = True
+                break
+    save_geometry(checkpoint)
+    if not converged:
+        raise RuntimeError(f'Full reference cell relaxation did not converge: {folder}')
+    save_geometry(path)
+    save_json(manifest, dict(settings=settings, sha256=sha256(path), converged=True,
+                            cell_A=atoms.cell.array.tolist(), lengths_A=atoms.cell.lengths().tolist(),
+                            angles_deg=atoms.cell.angles().tolist(), **metrics))
+    return atoms
+
+
 def validate_qha(cfg):
     temperatures = np.asarray(cfg['temperatures'], dtype=float)
     factors = np.asarray(cfg['volume_factors'], dtype=float)
@@ -263,20 +327,40 @@ def _phonons(atoms, calculator, folder, cfg):
     phonons.run()
     model = _phonopy_from_cache(phonons)
     from phonopy.physical_units import get_physical_units
-    qpoints = np.concatenate((np.zeros((1, 3)), monkhorst_pack(cfg['mesh'])))
+    mesh = monkhorst_pack(cfg['mesh'])
+    # Also screen wavevectors represented exactly by the force supercell.
+    # A shifted integration mesh can miss an unstable branch on a symmetry axis.
+    shape = np.asarray(cfg['phonon_supercell'])
+    commensurate = np.indices(shape).reshape(3, -1).T / shape
+    qpoints = np.concatenate((np.zeros((1, 3)), mesh, commensurate[1:]))
     frequencies = model.run_qpoints(qpoints).frequencies
     all_energies = frequencies * get_physical_units().THzToEv
-    gamma, energies = all_energies[0], all_energies[1:]
+    if not np.isfinite(all_energies).all():
+        raise ValueError('Nonfinite phonon spectrum; inspect calculator and force constants')
+    gamma = all_energies[0]
+    energies = all_energies[1:1+len(mesh)]
+    commensurate_energies = all_energies[1+len(mesh):]
     # Retain the actual rejected spectrum so scientific failures are diagnosable.
     save_npz(folder / 'phonon-diagnostics.npz', qpoints=qpoints, energies_eV=all_energies)
     save_json(folder / 'phonon-diagnostics.json', dict(backend='phonopy', version=version('phonopy'),
-        gamma_eV=gamma.tolist(), mesh_min_eV=float(energies.min()),
-        nonpositive_mesh_modes=int(np.sum(energies <= 0))))
+        gamma_eV=gamma.tolist(), mesh_points=len(mesh), mesh_min_eV=float(energies.min()),
+        nonpositive_mesh_modes=int(np.sum(energies <= 0)),
+        commensurate_points=len(commensurate)-1,
+        commensurate_min_eV=float(commensurate_energies.min()) if commensurate_energies.size else None,
+        nonpositive_commensurate_modes=int(np.sum(commensurate_energies <= 0))))
     if (not np.isfinite(gamma).all() or np.any(abs(gamma[:3]) > 1e-4)
             or np.any(gamma[3:] <= 0)):
-        raise ValueError(f'Unstable Gamma phonons or acoustic sum-rule failure; inspect {folder / "phonon-diagnostics.json"}')
+        raise PhononInstabilityError(f'Unstable Gamma phonons or acoustic sum-rule failure; inspect {folder / "phonon-diagnostics.json"}')
+    if commensurate_energies.size:
+        try:
+            vibrational_free_energy(commensurate_energies, [0.])
+        except ValueError as error:
+            raise PhononInstabilityError(f'Unstable phonons at supercell-commensurate wavevectors; inspect {folder / "phonon-diagnostics.json"}') from error
     # Validate before saving; an unstable volume must never be silently dropped.
-    vibrational_free_energy(energies, [0.])
+    try:
+        vibrational_free_energy(energies, [0.])
+    except ValueError as error:
+        raise PhononInstabilityError(f'Unstable phonons on the QHA mesh; inspect {folder / "phonon-diagnostics.json"}') from error
     return energies
 
 
@@ -299,9 +383,9 @@ def run_qha(cfg, output, calculator=None):
         runtime['phonopy'] = version('phonopy')
     except PackageNotFoundError as error:
         raise RuntimeError('QHA requires Phonopy; install md2spectra[qha]') from error
-    identity = dict(schema=3, config=cfg, cif_sha256=sha256(cfg['cif']), runtime=runtime,
-                    method='isotropic-phonopy-cubic-shape-relax-v3')
-    if calculator is not None:
+    identity = dict(schema=4, config=cfg, cif_sha256=sha256(cfg['cif']), runtime=runtime,
+                    method='isotropic-phonopy-cubic-shape-relax-v4')
+    if calculator is not None and not Path(cfg['uma_model']).is_file():
         identity['model_sha256'] = 'test-calculator'
     else:
         model_path = Path(cfg['uma_model'])
@@ -327,6 +411,11 @@ def run_qha(cfg, output, calculator=None):
         calc = calculator if calculator is not None else uma_calculator(cfg)
         volumes, static, vibrations, relaxed = [], [], [], []
         files = {}
+        if cfg.get('relax_reference', False):
+            reference = relax_reference(reference, calc, output/'reference', cfg['fmax'],
+                                        cfg['shape_stress_gpa'], cfg['pressure_gpa'])
+            for name in ['relaxed.extxyz', 'relaxed.json', 'settings.json']:
+                files['reference/'+name] = sha256(output/'reference'/name)
         for index, factor in enumerate(cfg['volume_factors']):
             folder = output / f'volume-{index:03d}'
             atoms = reference.copy()

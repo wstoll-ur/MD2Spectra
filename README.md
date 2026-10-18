@@ -115,7 +115,12 @@ independently at that optimized cell and its own temperature, followed by respon
 labeling and Raman analysis. The trajectory volume and temperature are passed
 through to spectral normalization and quantum correction automatically.
 
-The **QHA volume scan** preserves the input cell's shape and relaxes internal
+Add `--qha-relax-reference` to fully optimize the input cell's positions, lengths,
+angles and volume before QHA, at `--qha-pressure-gpa`. This optimization uses the
+original input cell before any phonon or MD replication and checkpoints its
+geometry for restart. Without this option, the supplied cell remains the reference.
+
+The **QHA volume scan** preserves the reference cell's shape and relaxes internal
 coordinates. The subsequent per-temperature shape optimization holds the fitted
 volume fixed while allowing all deviatoric strains, including shear. The resulting
 full cell matrix stays fixed throughout NVT. Shape relaxation minimizes static
@@ -124,7 +129,8 @@ is not a full anisotropic QHA minimization. QHA volumes include quantum harmonic
 effects, while subsequent MD remains classical. See
 [methods and limitations](docs/methods.md#quasi-harmonic-cell-preparation).
 
-Volume factors are `V/V_input`, not lattice-length factors. The default range is
+Volume factors are `V/V_reference`, not lattice-length factors; with reference
+optimization enabled they are relative to the optimized volume. The default range is
 a starting grid, not a guaranteed equilibrium bracket. An unstable phonon spectrum,
 nonconvex fit, or unbracketed minimum stops the workflow before MD. Inspect the
 saved free energies and converge the volume grid, phonon supercell, q-point mesh,
@@ -141,7 +147,7 @@ hydrostatic stress is allowed because volume is constrained. Volume is checked
 on every optimization step. QHA always uses conservative
 UMA inference because it evaluates both the input cell and phonon supercells;
 `--uma-inference md` still selects the optimized profile for subsequent MD.
-No additional dependency beyond the existing ASE/UMA installation is needed.
+The `qha` installation extra supplies the required Phonopy dependency.
 
 Add `--dry-run` to validate the inputs and preview the scan without model loading.
 Dry runs report the input volume; predicting temperature-dependent volumes

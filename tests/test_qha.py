@@ -19,8 +19,8 @@ from ase.io.trajectory import Trajectory
 from md2spectra.cli import main
 from md2spectra.dynamics import run_md
 from md2spectra.io import save_json, sha256
-from md2spectra.qha import (FixedVolumeCellFilter, _relax_shape, _phonopy_from_cache, fit_equilibrium,
-                           run_qha, validate_qha, vibrational_free_energy)
+from md2spectra.qha import (FixedVolumeCellFilter, _relax_shape, _phonopy_from_cache, _phonons, fit_equilibrium,
+                           relax_reference, run_qha, validate_qha, vibrational_free_energy)
 
 
 class ThermodynamicsTests(unittest.TestCase):
@@ -31,29 +31,31 @@ class ThermodynamicsTests(unittest.TestCase):
         from phonopy.physical_units import get_physical_units
         atoms = Atoms('C2', scaled_positions=[[.1, .3, .4], [.9, .3, .4]],
                       cell=[4, 5, 6], pbc=True)
-        shape, strong, weak, displacement = (2, 2, 2), 10., .1, .01
-        cache = {}
-        def index(cell, basis):
-            return np.ravel_multi_index(np.asarray(cell) % shape, shape) * 2 + basis
-        for basis in range(2):
-            for axis, letter in enumerate('xyz'):
-                for sign, suffix in [(-1, '-'), (1, '+')]:
-                    force = np.zeros((16, 3))
-                    u = sign * displacement
-                    force[basis, axis] = -(strong + 6 * weak) * u
-                    force[index([-1 if basis == 0 else 1, 0, 0], 1-basis), axis] += strong*u
-                    for direction in np.eye(3, dtype=int):
-                        for step in [-1, 1]:
-                            force[index(step*direction, basis), axis] += weak*u
-                    cache[f'{basis}{letter}{suffix}'] = dict(forces=force)
-        model = _phonopy_from_cache(SimpleNamespace(atoms=atoms, supercell=shape,
-                                                    delta=displacement, cache=cache))
-        q = np.array([[.125, .125, .125], [.3, -.2, .1], [.5, 0, 0]])
-        measured = model.run_qpoints(q).frequencies
-        acoustic = 2*weak*np.sum(1-np.cos(2*np.pi*q), axis=1)
-        eigenvalues = np.repeat(np.column_stack([acoustic, acoustic+2*strong]), 3, axis=1)
-        expected = np.sqrt(eigenvalues/atoms.get_masses()[0]) * get_physical_units().DefaultToTHz
-        np.testing.assert_allclose(measured, expected, rtol=1e-10, atol=1e-10)
+        strong, weak, displacement = 10., .1, .01
+        for side in [2, 3, 4]:
+            shape = (side,)*3
+            cache = {}
+            def index(cell, basis):
+                return np.ravel_multi_index(np.asarray(cell) % shape, shape) * 2 + basis
+            for basis in range(2):
+                for axis, letter in enumerate('xyz'):
+                    for sign, suffix in [(-1, '-'), (1, '+')]:
+                        force = np.zeros((2 * np.prod(shape), 3))
+                        u = sign * displacement
+                        force[basis, axis] = -(strong + 6 * weak) * u
+                        force[index([-1 if basis == 0 else 1, 0, 0], 1-basis), axis] += strong*u
+                        for direction in np.eye(3, dtype=int):
+                            for step in [-1, 1]:
+                                force[index(step*direction, basis), axis] += weak*u
+                        cache[f'{basis}{letter}{suffix}'] = dict(forces=force)
+            model = _phonopy_from_cache(SimpleNamespace(atoms=atoms, supercell=shape,
+                                                        delta=displacement, cache=cache))
+            q = np.array([[.125, .125, .125], [.3, -.2, .1], [.5, 0, 0]])
+            measured = model.run_qpoints(q).frequencies
+            acoustic = 2*weak*np.sum(1-np.cos(2*np.pi*q), axis=1)
+            eigenvalues = np.repeat(np.column_stack([acoustic, acoustic+2*strong]), 3, axis=1)
+            expected = np.sqrt(eigenvalues/atoms.get_masses()[0]) * get_physical_units().DefaultToTHz
+            np.testing.assert_allclose(measured, expected, rtol=1e-10, atol=1e-10)
 
     def test_quantum_free_energy_and_q_weights(self):
         energy, temperature = .02, 300.
@@ -113,9 +115,28 @@ class QHAWorkflowTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 validate_qha(dict(self.cfg, **{key: value}))
 
+    def test_commensurate_instability_is_rejected_even_when_shifted_mesh_is_positive(self):
+        atoms = read(self.cif)
+        def qpoints(points):
+            frequencies = np.ones((len(points), 3*len(atoms)))
+            frequencies[0, :3] = 0.
+            frequencies[1+int(np.prod(self.cfg['mesh'])), 0] = -.2
+            return SimpleNamespace(frequencies=frequencies)
+        model = SimpleNamespace(run_qpoints=qpoints)
+        with patch('md2spectra.qha.Phonons'), patch('md2spectra.qha._phonopy_from_cache', return_value=model):
+            with self.assertRaisesRegex(ValueError, 'supercell-commensurate'):
+                _phonons(atoms, None, self.root, self.cfg)
+        diagnostic = json.loads((self.root/'phonon-diagnostics.json').read_text())
+        self.assertEqual(diagnostic['nonpositive_mesh_modes'], 0)
+        self.assertEqual(diagnostic['nonpositive_commensurate_modes'], 1)
+
     def test_real_ase_phonons_restart_and_md_cell(self):
         output = self.root / 'qha'
+        self.cfg['relax_reference'] = True
         result = run_qha(self.cfg, output, calculator=EMT())
+        self.assertIn('reference/relaxed.extxyz', result['files'])
+        self.assertAlmostEqual(result['reference_volume_A3'],
+                               read(output/'reference/relaxed.extxyz').get_volume(), places=8)
         cold, hot = result['temperatures']
         self.assertGreater(hot['volume_A3'], cold['volume_A3'])
         atoms = read(output / hot['structure'])
@@ -159,6 +180,31 @@ class QHAWorkflowTests(unittest.TestCase):
 
 
 class ConstantVolumeShapeTests(unittest.TestCase):
+    def test_full_reference_relaxes_volume_shape_positions_and_restarts(self):
+        atoms = self.distorted_copper()
+        atoms.set_cell(atoms.cell*1.04, scale_atoms=True)
+        initial = atoms.copy()
+        atoms.calc = EMT()
+        initial_energy = atoms.get_potential_energy()
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            result = relax_reference(atoms, EMT(), folder)
+            record = json.loads((folder/'relaxed.json').read_text())
+            self.assertEqual(len(result), len(initial))
+            self.assertLess(result.get_volume(), initial.get_volume()*.95)
+            self.assertLess(record['energy_eV'], initial_energy)
+            self.assertLessEqual(record['max_force_eV_A'], .001)
+            self.assertLessEqual(record['max_residual_stress_GPa'], .01)
+            np.testing.assert_allclose(result.cell.angles(), 90., atol=.02)
+            with patch.object(EMT, 'calculate', side_effect=AssertionError('reuse reference')):
+                reused = relax_reference(initial, EMT(), folder)
+            np.testing.assert_allclose(reused.cell, result.cell, atol=1e-12)
+            with self.assertRaisesRegex(ValueError, 'settings changed'):
+                relax_reference(initial, EMT(), folder, stress_gpa=.02)
+            (folder/'relaxed.extxyz').write_text('tampered')
+            with self.assertRaisesRegex(ValueError, 'checksum'):
+                relax_reference(initial, EMT(), folder)
+
     def distorted_copper(self):
         atoms = bulk('Cu', 'fcc', a=3.6, cubic=True)
         deformation = np.array([[1.04, .05, 0], [0, .98, .035], [0, 0, 1/(1.04*.98)]])
@@ -295,8 +341,9 @@ class QHACliTests(unittest.TestCase):
 
     def test_series_passes_each_cell_and_temperature_to_existing_pipeline(self):
         with patch('md2spectra.cli.subprocess.run', side_effect=self.fake_qha) as execute:
-            main(self.base + ['--qha', '--temperature-range', '100', '300', '100', '--supercell', '2', '1', '1'])
+            main(self.base + ['--qha', '--qha-relax-reference', '--temperature-range', '100', '300', '100', '--supercell', '2', '1', '1'])
         self.assertEqual(execute.call_count, 4)
+        self.assertIn('--qha-relax-reference', execute.call_args_list[0].args[0])
         for index, call in enumerate(execute.call_args_list[1:]):
             command = call.args[0]
             self.assertEqual(command[3], 'run')
