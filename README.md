@@ -132,7 +132,7 @@ effects, while subsequent MD remains classical. See
 Volume factors are `V/V_reference`, not lattice-length factors; with reference
 optimization enabled they are relative to the optimized volume. The default range is
 a starting grid, not a guaranteed equilibrium bracket. An unstable phonon spectrum,
-nonconvex fit, or unbracketed minimum stops the workflow before MD. Inspect the
+nonpositive curvature at the fitted minimum, or unbracketed minimum stops the workflow before MD. Inspect the
 saved free energies and converge the volume grid, phonon supercell, q-point mesh,
 displacement and relaxation threshold for the crystal of interest. No unstable
 modes or volume points are silently removed. Refine settings in a new directory.

@@ -59,10 +59,13 @@ converted to eV/Å³ with ASE units. Free-energy arrays have shape
 `(number_of_volumes, number_of_temperatures)`.
 
 A cubic polynomial is fitted to each temperature's free-energy curve on at least
-five volume points. The sampled minimum must be interior, the fit must be convex
-throughout the sampled interval, and its stationary point must be bracketed by
-the sampled minimum's neighboring volumes. No extrapolation is allowed. A
-bracketed derivative root gives the equilibrium volume. Fit residuals and
+five volume points. The sampled minimum must be interior, the fitted derivative
+must be negative at the lower boundary and positive at the upper boundary, and
+its minimum must have positive curvature and be bracketed by the sampled
+minimum's neighboring volumes. For a cubic these derivative signs ensure a unique
+stationary point in the interval. No extrapolation is allowed. An inflection near
+a grid edge is permitted; the two edge curvatures are recorded for inspection.
+A bracketed derivative root gives the equilibrium volume. Fit residuals and
 `B = V*d²G/dV²` are exported for assessment; a successful fit is not a
 convergence criterion. Check residuals against the energy differences that
 determine the minimum and vary the grid to establish fit stability.

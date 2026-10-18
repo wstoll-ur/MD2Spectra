@@ -164,19 +164,23 @@ def fit_equilibrium(volumes, free_energy):
     offset = float(free_energy.min())
     poly = Polynomial.fit(volumes, free_energy - offset, 3)
     curvature = poly.deriv(2)
-    if np.any(curvature(volumes[[0, -1]]) <= 0):
-        raise ValueError('Nonconvex QHA fit; inspect the free-energy grid and refine the volume range')
     derivative = poly.deriv()
     if derivative(volumes[0]) >= 0 or derivative(volumes[-1]) <= 0:
         raise ValueError('QHA fitted minimum lies outside the sampled volume range')
     # Bracketing avoids the ill-conditioned quadratic roots when the cubic
     # coefficient is nearly zero (e.g. an exactly parabolic free-energy curve).
     volume = float(brentq(derivative, volumes[0], volumes[-1], xtol=1e-12))
+    # For a cubic, opposite endpoint derivative signs bracket a unique minimum.
+    # Curvature must be positive there, but need not be positive at every sampled
+    # volume: an inflection near a grid edge does not invalidate the minimum.
+    if curvature(volume) <= 0:
+        raise ValueError('QHA fitted minimum has nonpositive curvature')
     if not volumes[index-1] < volume < volumes[index+1]:
         raise ValueError('QHA fitted minimum is not reliably bracketed by sampled volumes')
     residual = poly(volumes) + offset - free_energy
     return dict(volume_A3=volume, free_energy_eV=float(poly(volume) + offset),
                 bulk_modulus_GPa=float(volume * curvature(volume) / units.GPa),
+                fit_edge_curvature_eV_A6=curvature(volumes[[0, -1]]).tolist(),
                 fit_rms_eV=float(np.sqrt(np.mean(residual**2))),
                 fit_max_error_eV=float(np.max(abs(residual))))
 

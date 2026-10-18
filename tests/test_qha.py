@@ -98,6 +98,19 @@ class ThermodynamicsTests(unittest.TestCase):
         equilibrium = [fit_equilibrium(volumes, free[:, i])['volume_A3'] for i in range(3)]
         self.assertTrue(np.all(np.diff(equilibrium) > 0))
 
+    def test_cubic_edge_inflection_preserves_unique_bracketed_minimum(self):
+        volumes = np.linspace(95., 105., 11)
+        x = volumes - 100.
+        fitted = fit_equilibrium(volumes, .01*x*x - .001*x*x*x)
+        self.assertAlmostEqual(fitted['volume_A3'], 100., places=8)
+        self.assertGreater(fitted['bulk_modulus_GPa'], 0.)
+        self.assertLess(fitted['fit_edge_curvature_eV_A6'][1], 0.)
+        # Extending past the cubic's local maximum must still be rejected.
+        volumes = np.linspace(95., 108., 14)
+        x = volumes - 100.
+        with self.assertRaises(ValueError):
+            fit_equilibrium(volumes, .01*x*x - .001*x*x*x)
+
 
 class QHAWorkflowTests(unittest.TestCase):
     def setUp(self):
