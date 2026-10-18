@@ -27,7 +27,7 @@ cd MD2Spectra
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install '.[uma,response]'
+python -m pip install '.[uma,response,qha]'
 ```
 
 Request access to [facebook/UMA](https://huggingface.co/facebook/UMA), accept its
@@ -105,6 +105,9 @@ exclusive. MD temperatures must be positive and lists strictly increasing.
 
 QHA uses UMA static energies and finite-displacement phonons at each sampled
 volume to minimize `E_static(V) + F_vib(V,T) + pV`, including zero-point energy.
+Install the `qha` extra in the UMA environment. ASE collects restartable force
+calculations; Phonopy constructs and symmetrizes the force constants and uses
+pair-dependent shortest vectors for interpolation across the q mesh.
 The phonon scan is shared by all temperatures. At each fitted volume, a
 **constant-volume optimization relaxes lattice lengths, angles and atomic
 positions** using UMA energy, forces and stress. Each MD run then equilibrates
@@ -170,8 +173,8 @@ runs/crystal-qha/
 
 Repeat the identical command to resume. Completed phonon displacements, volume
 calculations and temperature runs are reused; model/input/settings changes are
-rejected. Outputs from the earlier QHA implementation without shape optimization
-require a new output directory. Each temperature directory retains the existing MD checkpoint, `STOP`
+rejected. Outputs from earlier QHA implementations, including ASE-only phonon
+processing, require a new output directory. Each temperature directory retains the existing MD checkpoint, `STOP`
 and labeling restart behavior. QHA's interrupted displacement resumes from its
 force cache; interrupted relaxation repeats that volume's relaxation. QHA,
 MD and response stages run sequentially in separate processes to release model
@@ -276,6 +279,7 @@ and [the cluster example](examples/slurm.sh) for a scheduler template.
 ## Validation
 
 ```bash
+python -m pip install '.[qha]'
 python -m unittest discover -s tests -v
 ```
 

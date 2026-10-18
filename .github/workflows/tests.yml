@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install .
+      - run: python -m pip install '.[qha]'
       - run: python -m unittest discover -s tests -v
       - run: md2spectra run --cif examples/synthetic-water.cif --temperature 300 --dry-run --output runs/dry-run
       - run: md2motion --help

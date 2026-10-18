@@ -5,10 +5,12 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 from ase import units
+from ase import Atoms
 from ase.build import bulk
 from ase.calculators.emt import EMT
 from ase.io import read, write
@@ -17,11 +19,42 @@ from ase.io.trajectory import Trajectory
 from md2spectra.cli import main
 from md2spectra.dynamics import run_md
 from md2spectra.io import save_json, sha256
-from md2spectra.qha import (FixedVolumeCellFilter, _relax_shape, fit_equilibrium,
+from md2spectra.qha import (FixedVolumeCellFilter, _relax_shape, _phonopy_from_cache, fit_equilibrium,
                            run_qha, validate_qha, vibrational_free_energy)
 
 
 class ThermodynamicsTests(unittest.TestCase):
+    def test_even_supercell_boundary_bond_matches_analytic_dispersion(self):
+        # Strong dimers cross the unit-cell boundary; weak springs join equal
+        # basis atoms in all directions. This is positive semidefinite exactly,
+        # including at q points not commensurate with the 2x2x2 force supercell.
+        from phonopy.physical_units import get_physical_units
+        atoms = Atoms('C2', scaled_positions=[[.1, .3, .4], [.9, .3, .4]],
+                      cell=[4, 5, 6], pbc=True)
+        shape, strong, weak, displacement = (2, 2, 2), 10., .1, .01
+        cache = {}
+        def index(cell, basis):
+            return np.ravel_multi_index(np.asarray(cell) % shape, shape) * 2 + basis
+        for basis in range(2):
+            for axis, letter in enumerate('xyz'):
+                for sign, suffix in [(-1, '-'), (1, '+')]:
+                    force = np.zeros((16, 3))
+                    u = sign * displacement
+                    force[basis, axis] = -(strong + 6 * weak) * u
+                    force[index([-1 if basis == 0 else 1, 0, 0], 1-basis), axis] += strong*u
+                    for direction in np.eye(3, dtype=int):
+                        for step in [-1, 1]:
+                            force[index(step*direction, basis), axis] += weak*u
+                    cache[f'{basis}{letter}{suffix}'] = dict(forces=force)
+        model = _phonopy_from_cache(SimpleNamespace(atoms=atoms, supercell=shape,
+                                                    delta=displacement, cache=cache))
+        q = np.array([[.125, .125, .125], [.3, -.2, .1], [.5, 0, 0]])
+        measured = model.run_qpoints(q).frequencies
+        acoustic = 2*weak*np.sum(1-np.cos(2*np.pi*q), axis=1)
+        eigenvalues = np.repeat(np.column_stack([acoustic, acoustic+2*strong]), 3, axis=1)
+        expected = np.sqrt(eigenvalues/atoms.get_masses()[0]) * get_physical_units().DefaultToTHz
+        np.testing.assert_allclose(measured, expected, rtol=1e-10, atol=1e-10)
+
     def test_quantum_free_energy_and_q_weights(self):
         energy, temperature = .02, 300.
         modes = np.full((8, 6), energy)

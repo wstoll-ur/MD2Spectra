@@ -15,7 +15,8 @@ submission are not implemented.
 
 The optional QHA stage follows the [volume-dependent harmonic free-energy
 definition](https://phonopy.github.io/phonopy/qha.html), implemented with
-[ASE finite-displacement phonons](https://docs.ase-lib.org/ase/phonons.html).
+[ASE finite-displacement forces](https://docs.ase-lib.org/ase/phonons.html) and
+[Phonopy force-constant processing](https://phonopy.github.io/phonopy/formulation.html).
 The input crystallographic cell is used as the phonon basis; no primitive-cell
 reduction is required. At each volume factor `s = V/V_input`, lattice vectors
 are scaled by `s^(1/3)` and internal coordinates are relaxed with FIRE under UMA.
@@ -24,13 +25,20 @@ the subsequent temperature-cell shape optimization, is always performed,
 independent of the optional MD `--no-relax` setting.
 
 Central displacements generate real-space force constants in the independent
-`--qha-supercell`. ASE symmetrization and the acoustic sum rule are applied.
+`--qha-supercell`. An explicit periodic-position/species mapping transfers the
+ASE forces into Phonopy's atom ordering. Phonopy applies permutation symmetry
+and the acoustic sum rule, then interpolates using pair-dependent shortest
+supercell vectors. This is especially important for small molecular supercells
+with strong bonds crossing cell boundaries. Spatial point-group symmetries and
+automatic primitive-cell reduction are disabled; all atoms are displaced.
 Phonon energies `epsilon(q,j) = hbar*omega(q,j)` are in eV. A shifted
 Monkhorst–Pack grid with even dimensions avoids Gamma's translational zero
 modes. Every mode on that grid must have positive energy. Gamma is checked
 separately: the lowest three branches must be within 1e-4 eV of zero, and all
-remaining modes must be positive. Negative ASE energies represent imaginary
+remaining modes must be positive. Negative signed energies represent imaginary
 frequencies; they are never replaced by absolute values or omitted.
+Every newly evaluated volume retains `phonon-diagnostics.npz` and
+`phonon-diagnostics.json`, including the rejected frequencies if validation fails.
 
 For each requested temperature:
 

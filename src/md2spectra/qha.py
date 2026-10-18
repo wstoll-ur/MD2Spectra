@@ -6,6 +6,7 @@ its shape and internal coordinates at exactly the fitted volume before NVT.
 """
 import json
 from pathlib import Path
+from importlib.metadata import PackageNotFoundError, version
 
 import numpy as np
 from numpy.polynomial import Polynomial
@@ -205,6 +206,52 @@ def _relax_shape(atoms, calculator, folder, target_volume, fmax, stress_gpa):
     return atoms
 
 
+def _phonopy_from_cache(phonons):
+    """Read ASE displacements with explicit atom mapping; interpolate in Phonopy.
+
+    The pair-dependent shortest supercell vectors matter for small molecular
+    supercells. A single lattice translation per force-constant block can give
+    spurious imaginary modes away from commensurate q points.
+    """
+    try:
+        from phonopy import Phonopy
+        from phonopy.structure.atoms import PhonopyAtoms
+    except ImportError as error:
+        raise RuntimeError('QHA requires Phonopy; install md2spectra[qha]') from error
+    atoms = phonons.atoms
+    model = Phonopy(PhonopyAtoms(symbols=atoms.get_chemical_symbols(),
+                    cell=atoms.cell.array, scaled_positions=atoms.get_scaled_positions(),
+                    masses=atoms.get_masses()), phonons.supercell,
+                    primitive_matrix=np.eye(3), is_symmetry=False)
+    # ASE orders repeated cells first, whereas Phonopy orders atoms first.
+    repeated = atoms.repeat(phonons.supercell)
+    delta = model.supercell.scaled_positions[:, None] - repeated.get_scaled_positions()[None, :]
+    delta -= np.rint(delta)
+    distances = np.linalg.norm(delta @ repeated.cell.array, axis=2)
+    p2a = distances.argmin(axis=1)
+    if (len(np.unique(p2a)) != len(repeated) or
+            np.max(distances[np.arange(len(repeated)), p2a]) > 1e-7 or
+            not np.array_equal(model.supercell.numbers, repeated.numbers[p2a])):
+        raise ValueError('Cannot uniquely map ASE and Phonopy supercell atoms')
+    a2p = np.argsort(p2a)
+    displacements = []
+    for atom in range(len(atoms)):
+        for axis, letter in enumerate('xyz'):
+            for sign, suffix in [(-1, '-'), (1, '+')]:
+                forces = np.asarray(phonons.cache[f'{atom}{letter}{suffix}']['forces'])
+                if forces.shape != (len(repeated), 3) or not np.isfinite(forces).all():
+                    raise ValueError('Invalid cached phonon forces')
+                displacements.append(dict(number=int(a2p[atom]),
+                    displacement=np.eye(3)[axis] * sign * phonons.delta,
+                    forces=forces[p2a]))
+    model.dataset = dict(natom=len(repeated), first_atoms=displacements)
+    model.produce_force_constants(fc_calculator='traditional')
+    # Enforce translational and permutation identities on the full tensor.
+    # No frequency is clipped, discarded, or replaced by its absolute value.
+    model.symmetrize_force_constants()
+    return model
+
+
 def _phonons(atoms, calculator, folder, cfg):
     phonons = Phonons(atoms, calculator, supercell=tuple(cfg['phonon_supercell']),
                       delta=cfg['displacement'], name=str(folder / 'forces'))
@@ -214,12 +261,20 @@ def _phonons(atoms, calculator, folder, cfg):
         if path.stat().st_size == 0:
             path.unlink()
     phonons.run()
-    phonons.read(acoustic=True)
-    gamma = phonons.band_structure(np.zeros((1, 3)), verbose=False)[0]
+    model = _phonopy_from_cache(phonons)
+    from phonopy.physical_units import get_physical_units
+    qpoints = np.concatenate((np.zeros((1, 3)), monkhorst_pack(cfg['mesh'])))
+    frequencies = model.run_qpoints(qpoints).frequencies
+    all_energies = frequencies * get_physical_units().THzToEv
+    gamma, energies = all_energies[0], all_energies[1:]
+    # Retain the actual rejected spectrum so scientific failures are diagnosable.
+    save_npz(folder / 'phonon-diagnostics.npz', qpoints=qpoints, energies_eV=all_energies)
+    save_json(folder / 'phonon-diagnostics.json', dict(backend='phonopy', version=version('phonopy'),
+        gamma_eV=gamma.tolist(), mesh_min_eV=float(energies.min()),
+        nonpositive_mesh_modes=int(np.sum(energies <= 0))))
     if (not np.isfinite(gamma).all() or np.any(abs(gamma[:3]) > 1e-4)
             or np.any(gamma[3:] <= 0)):
-        raise ValueError('Unstable Gamma phonons or acoustic sum-rule failure; inspect force constants')
-    energies = phonons.band_structure(monkhorst_pack(cfg['mesh']), verbose=False)
+        raise ValueError(f'Unstable Gamma phonons or acoustic sum-rule failure; inspect {folder / "phonon-diagnostics.json"}')
     # Validate before saving; an unstable volume must never be silently dropped.
     vibrational_free_energy(energies, [0.])
     return energies
@@ -239,8 +294,13 @@ def run_qha(cfg, output, calculator=None):
     reference = prepare(dict(cfg, supercell=[1, 1, 1]))
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    identity = dict(schema=2, config=cfg, cif_sha256=sha256(cfg['cif']), runtime=versions(),
-                    method='isotropic-ase-phonons-cubic-shape-relax-v2')
+    runtime = versions()
+    try:
+        runtime['phonopy'] = version('phonopy')
+    except PackageNotFoundError as error:
+        raise RuntimeError('QHA requires Phonopy; install md2spectra[qha]') from error
+    identity = dict(schema=3, config=cfg, cif_sha256=sha256(cfg['cif']), runtime=runtime,
+                    method='isotropic-phonopy-cubic-shape-relax-v3')
     if calculator is not None:
         identity['model_sha256'] = 'test-calculator'
     else:
