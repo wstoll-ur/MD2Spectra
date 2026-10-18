@@ -43,6 +43,8 @@ def add_md_options(p, multiple_temperatures=False):
 
 
 def add_qha_options(p):
+    p.add_argument('--qha-phonon-sampling', choices=['mesh', 'gamma'], default='mesh',
+                   help='Phonon free energy: Brillouin-zone mesh or Gamma-only optical-mode approximation')
     p.add_argument('--qha-relax-reference', action=argparse.BooleanOptionalAction, default=False,
                    help='Fully relax input-cell positions, lengths and angles before the volume scan')
     p.add_argument('--qha-volume-factors', type=float, nargs='+',
@@ -69,7 +71,7 @@ def qha_config(args, temperatures):
                phonon_supercell=args.qha_supercell, mesh=args.qha_mesh,
                displacement=args.qha_displacement, fmax=args.qha_fmax,
                pressure_gpa=args.qha_pressure_gpa, shape_stress_gpa=args.qha_shape_stress_gpa,
-               relax_reference=args.qha_relax_reference)
+               relax_reference=args.qha_relax_reference, phonon_sampling=args.qha_phonon_sampling)
     from .qha import validate_qha
     validate_qha(cfg)
     return cfg

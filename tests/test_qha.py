@@ -20,10 +20,17 @@ from md2spectra.cli import main
 from md2spectra.dynamics import run_md
 from md2spectra.io import save_json, sha256
 from md2spectra.qha import (FixedVolumeCellFilter, _relax_shape, _phonopy_from_cache, _phonons, fit_equilibrium,
-                           relax_reference, run_qha, validate_qha, vibrational_free_energy)
+                           gamma_optical_energies, relax_reference, run_qha, validate_qha, vibrational_free_energy)
 
 
 class ThermodynamicsTests(unittest.TestCase):
+    def test_gamma_only_removes_exactly_translations_and_rejects_optical_instability(self):
+        gamma = [-1e-9, 0., 1e-9, .005, .01, .02]
+        np.testing.assert_array_equal(gamma_optical_energies(gamma), [[.005, .01, .02]])
+        for bad in [[-.01, 0, 0, .01], [-1e-9, 0, 0, 0], [0, 0, 0, np.nan]]:
+            with self.assertRaises(ValueError):
+                gamma_optical_energies(bad)
+
     def test_even_supercell_boundary_bond_matches_analytic_dispersion(self):
         # Strong dimers cross the unit-cell boundary; weak springs join equal
         # basis atoms in all directions. This is positive semidefinite exactly,
@@ -114,6 +121,32 @@ class QHAWorkflowTests(unittest.TestCase):
                            ('displacement', 0), ('fmax', -1), ('shape_stress_gpa', 0)]:
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 validate_qha(dict(self.cfg, **{key: value}))
+
+    def test_gamma_sampling_evaluates_only_gamma(self):
+        atoms = read(self.cif)
+        def qpoints(points):
+            np.testing.assert_array_equal(points, np.zeros((1, 3)))
+            frequencies = np.ones((1, 3*len(atoms)))
+            frequencies[0, :3] = 0.
+            return SimpleNamespace(frequencies=frequencies)
+        model = SimpleNamespace(run_qpoints=qpoints)
+        with patch('md2spectra.qha.Phonons'), patch('md2spectra.qha._phonopy_from_cache', return_value=model):
+            energies = _phonons(atoms, None, self.root, dict(self.cfg, phonon_sampling='gamma'))
+        self.assertEqual(energies.shape, (1, 3*len(atoms)-3))
+        self.assertTrue((energies > 0).all())
+
+    def test_gamma_qha_integration_and_cache_identity(self):
+        cfg = dict(self.cfg, phonon_sampling='gamma')
+        output = self.root/'gamma'
+        result = run_qha(cfg, output, calculator=EMT())
+        self.assertEqual(result['phonon_sampling'], 'gamma')
+        self.assertIn('approximation', result['vibrational_model'])
+        with np.load(output/'volume-000/phonons.npz') as data:
+            self.assertEqual(data['energies_eV'].shape, (1, 9))
+        with patch('md2spectra.qha._phonons', side_effect=AssertionError('reuse cache')):
+            self.assertEqual(run_qha(cfg, output, calculator=EMT()), result)
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            run_qha(dict(cfg, phonon_sampling='mesh'), output, calculator=EMT())
 
     def test_commensurate_instability_is_rejected_even_when_shifted_mesh_is_positive(self):
         atoms = read(self.cif)
@@ -341,9 +374,11 @@ class QHACliTests(unittest.TestCase):
 
     def test_series_passes_each_cell_and_temperature_to_existing_pipeline(self):
         with patch('md2spectra.cli.subprocess.run', side_effect=self.fake_qha) as execute:
-            main(self.base + ['--qha', '--qha-relax-reference', '--temperature-range', '100', '300', '100', '--supercell', '2', '1', '1'])
+            main(self.base + ['--qha', '--qha-relax-reference', '--qha-phonon-sampling', 'gamma', '--temperature-range', '100', '300', '100', '--supercell', '2', '1', '1'])
         self.assertEqual(execute.call_count, 4)
         self.assertIn('--qha-relax-reference', execute.call_args_list[0].args[0])
+        qcommand = execute.call_args_list[0].args[0]
+        self.assertEqual(qcommand[qcommand.index('--qha-phonon-sampling')+1], 'gamma')
         for index, call in enumerate(execute.call_args_list[1:]):
             command = call.args[0]
             self.assertEqual(command[3], 'run')

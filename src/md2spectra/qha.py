@@ -88,6 +88,9 @@ def relax_reference(atoms, calculator, folder, fmax=.001, stress_gpa=.01, pressu
 
 
 def validate_qha(cfg):
+    sampling = cfg.get('phonon_sampling', 'mesh')
+    if sampling not in ['mesh', 'gamma']:
+        raise ValueError('QHA phonon_sampling must be mesh or gamma')
     temperatures = np.asarray(cfg['temperatures'], dtype=float)
     factors = np.asarray(cfg['volume_factors'], dtype=float)
     if (temperatures.ndim != 1 or not len(temperatures) or
@@ -103,7 +106,7 @@ def validate_qha(cfg):
             raise ValueError(f'QHA {key} requires three positive integers')
     # A shifted even MP mesh avoids the singular acoustic modes at Gamma.
     # Gamma is checked separately for instabilities, never included in F_vib.
-    if any(v % 2 for v in cfg['mesh']):
+    if sampling == 'mesh' and any(v % 2 for v in cfg['mesh']):
         raise ValueError('QHA mesh dimensions must be even (shifted mesh excluding Gamma)')
     for key in ['displacement', 'fmax']:
         if not np.isfinite(cfg[key]) or cfg[key] <= 0:
@@ -135,6 +138,16 @@ def vibrational_free_energy(energies, temperatures):
             kbt = units.kB * temperature
             result[i] += kbt * np.log(-np.expm1(-energies / kbt)).sum(axis=1).mean()
     return result
+
+
+def gamma_optical_energies(gamma):
+    """Gamma-only approximation: exclude exactly three translational zeros."""
+    gamma = np.asarray(gamma, dtype=float)
+    if (gamma.ndim != 1 or len(gamma) <= 3 or not np.isfinite(gamma).all()
+            or np.any(np.diff(gamma) < 0) or np.any(abs(gamma[:3]) > 1e-4)
+            or np.any(gamma[3:] <= 0)):
+        raise PhononInstabilityError('Unstable Gamma optical modes or acoustic sum-rule failure')
+    return gamma[None, 3:]
 
 
 def fit_equilibrium(volumes, free_energy):
@@ -327,6 +340,13 @@ def _phonons(atoms, calculator, folder, cfg):
     phonons.run()
     model = _phonopy_from_cache(phonons)
     from phonopy.physical_units import get_physical_units
+    if cfg.get('phonon_sampling', 'mesh') == 'gamma':
+        qpoints = np.zeros((1, 3))
+        energies = model.run_qpoints(qpoints).frequencies * get_physical_units().THzToEv
+        save_npz(folder / 'phonon-diagnostics.npz', qpoints=qpoints, energies_eV=energies)
+        save_json(folder / 'phonon-diagnostics.json', dict(backend='phonopy', version=version('phonopy'),
+            phonon_sampling='gamma', gamma_eV=energies[0].tolist(), excluded_translational_modes=3))
+        return gamma_optical_energies(energies[0])
     mesh = monkhorst_pack(cfg['mesh'])
     # Also screen wavevectors represented exactly by the force supercell.
     # A shifted integration mesh can miss an unstable branch on a symmetry axis.
@@ -371,6 +391,7 @@ def run_qha(cfg, output, calculator=None):
     # the composition-specialized MD inference profile across those sizes.
     cfg['uma_inference'] = 'conservative'
     cfg.setdefault('shape_stress_gpa', .01)
+    cfg.setdefault('phonon_sampling', 'mesh')
     validate_qha(cfg)
     cfg['cif'] = str(Path(cfg['cif']).expanduser().resolve())
     if Path(cfg['uma_model']).expanduser().is_file():
@@ -383,8 +404,8 @@ def run_qha(cfg, output, calculator=None):
         runtime['phonopy'] = version('phonopy')
     except PackageNotFoundError as error:
         raise RuntimeError('QHA requires Phonopy; install md2spectra[qha]') from error
-    identity = dict(schema=4, config=cfg, cif_sha256=sha256(cfg['cif']), runtime=runtime,
-                    method='isotropic-phonopy-cubic-shape-relax-v4')
+    identity = dict(schema=5, config=cfg, cif_sha256=sha256(cfg['cif']), runtime=runtime,
+                    method='isotropic-phonopy-cubic-shape-relax-v5')
     if calculator is not None and not Path(cfg['uma_model']).is_file():
         identity['model_sha256'] = 'test-calculator'
     else:
@@ -434,7 +455,8 @@ def run_qha(cfg, output, calculator=None):
                 energies = _phonons(atoms, calc, folder, cfg)
                 save_npz(data, energies_eV=energies)
                 save_json(volume_done, dict(sha256=sha256(data)))
-            expected = (int(np.prod(cfg['mesh'])), 3 * len(reference))
+            expected = ((1, 3 * len(reference) - 3) if cfg['phonon_sampling'] == 'gamma'
+                        else (int(np.prod(cfg['mesh'])), 3 * len(reference)))
             if energies.shape != expected:
                 raise ValueError(f'Unexpected phonon array shape: {energies.shape}, expected {expected}')
             volumes.append(atoms.get_volume())
@@ -445,12 +467,12 @@ def run_qha(cfg, output, calculator=None):
             print(f'QHA: volume {index+1}/{len(cfg["volume_factors"])} complete', flush=True)
         volumes, static, vibrations = map(np.asarray, [volumes, static, vibrations])
         free_energy = static[:, None] + vibrations + cfg['pressure_gpa'] * units.GPa * volumes[:, None]
-        # Fit every temperature before starting any temperature-dependent MD.
-        rows = [dict(temperature_K=float(t), **fit_equilibrium(volumes, free_energy[:, i]))
-                for i, t in enumerate(cfg['temperatures'])]
         save_npz(output / 'free-energy.npz', volumes_A3=volumes, static_energy_eV=static,
                  temperatures_K=cfg['temperatures'], vibrational_free_energy_eV=vibrations,
                  total_free_energy_eV=free_energy)
+        # Retain the grid even if a fit fails. Never extrapolate beyond it.
+        rows = [dict(temperature_K=float(t), **fit_equilibrium(volumes, free_energy[:, i]))
+                for i, t in enumerate(cfg['temperatures'])]
         for index, row in enumerate(rows):
             nearest = int(np.argmin(abs(volumes - row['volume_A3'])))
             atoms = relaxed[nearest].copy()
@@ -473,6 +495,9 @@ def run_qha(cfg, output, calculator=None):
         if sha256(cfg['cif']) != identity['cif_sha256']:
             raise ValueError('QHA input changed during calculation')
         result = dict(identity=identity, reference_volume_A3=reference.get_volume(),
+                      phonon_sampling=cfg['phonon_sampling'],
+                      vibrational_model=('Gamma-only optical-mode approximation; three translational modes excluded'
+                          if cfg['phonon_sampling'] == 'gamma' else 'Brillouin-zone phonon mesh'),
                       cell_model='Isotropic QHA volume scan; static fixed-volume shape/position relaxation at each temperature',
                       temperatures=rows, files=files)
         save_json(done, result)

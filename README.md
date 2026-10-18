@@ -325,3 +325,25 @@ The conservative profile remains the default. An explicitly selected profile
 is part of the restart identity and cannot be changed within an existing run.
 Trajectories are retained after spectra are calculated and can be reused for
 coordinate-based collective variables and free-energy analysis.
+
+For a **Gamma-only QHA approximation**, add `--qha-phonon-sampling gamma`.
+This uses the positive Gamma optical modes at each volume and excludes exactly
+three translational zero modes. Off-Gamma modes do not enter this approximation.
+The sampling choice is saved in the calculation provenance; use a separate output
+directory when switching from the default Brillouin-zone mesh treatment.
+
+A complete Gamma-only Slurm example is provided in
+[`examples/slurm-qha.sh`](examples/slurm-qha.sh). It submits the full input-cell
+optimization and QHA first, then a dependent six-temperature job array with
+**one GPU per temperature**, 2×2×2 MD cells, 10 ps equilibration, 200 ps production,
+and 785 nm Raman analysis. The array starts only after QHA and every fixed-volume
+temperature-cell optimization succeed. Configure the Python environments and
+cluster account/partition as described in the script, then run:
+
+```bash
+bash examples/slurm-qha.sh submit crystal.cif /absolute/path/to/results
+```
+
+The example volume grid is 98–104% in 1% steps. A minimum outside the sampled
+range stops the fit; it is never extrapolated. Slurm dependencies automate stage
+ordering; this example does not automatically resubmit jobs after wall-time limits.

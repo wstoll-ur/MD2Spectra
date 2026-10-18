@@ -202,3 +202,14 @@ Phonon stability failures have a distinct `PhononInstabilityError` type so an
 external workflow can retry larger phonon supercells without treating an input,
 calculator, relaxation, or free-energy-fit failure as a finite-size problem.
 Passing stability screening alone does not establish supercell convergence.
+
+### Gamma-only volume approximation
+
+`--qha-phonon-sampling gamma` uses only Gamma-point optical frequencies in the
+vibrational free energy. Exactly three near-zero translational modes are excluded
+after the acoustic-sum-rule check; any nonpositive remaining mode is rejected.
+Off-Gamma frequencies are not calculated or screened in this mode. This explicitly
+requested approximation omits phonon dispersion and acoustic-branch contributions
+to the Brillouin-zone free energy. It is recorded in input identity and outputs;
+mesh and Gamma results cannot share a restart directory. The default remains
+`--qha-phonon-sampling mesh`. No unstable optical mode is clipped or discarded.
